@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "SayNative",
-    "slug": "saynative-mobile",
+    "slug": "saynative",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
