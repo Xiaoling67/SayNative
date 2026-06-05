@@ -1,0 +1,12 @@
+.env
+.env.*
+.expo
+.git
+node_modules
+ios
+android
+assets
+src
+*.log
+Dockerfile
+README.md

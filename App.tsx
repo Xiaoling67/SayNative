@@ -1,20 +1,24 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react'
+import { Modal } from 'react-native'
+import { StatusBar } from 'expo-status-bar'
+import MainScreen from './src/screens/MainScreen'
+import HistoryScreen from './src/screens/HistoryScreen'
 
 export default function App() {
-  return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
-  );
-}
+  const [historyOpen, setHistoryOpen] = useState(false)
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+  return (
+    <>
+      <StatusBar style="dark" />
+      <MainScreen onOpenHistory={() => setHistoryOpen(true)} />
+      <Modal
+        visible={historyOpen}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setHistoryOpen(false)}
+      >
+        <HistoryScreen onClose={() => setHistoryOpen(false)} />
+      </Modal>
+    </>
+  )
+}
