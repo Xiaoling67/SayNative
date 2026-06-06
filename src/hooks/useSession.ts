@@ -77,31 +77,36 @@ export function useSession(): SessionData {
     }
     const language = label === 'english' ? 'english' : 'chinese'
     const mode = label === 'english' ? 'manual' : 'vad'
-    const realtime = await startRealtimeTranscription(language, mode, {
-      onPartial(text) {
-        setPartialTranscript(text)
-        partialTranscriptRef.current = text
-        if (label === 'scene') {
-          setSceneTranscript(text)
-          sceneTranscriptRef.current = text
-        }
-      },
-      onFinal(text) {
-        setPartialTranscript(text)
-        partialTranscriptRef.current = text
-        if (label === 'scene') {
-          setSceneTranscript(text)
-          sceneTranscriptRef.current = text
-        }
-      },
-      onError(error) {
-        console.warn(`Realtime transcription ${label} error: ${error.message}`)
-        if (recordingModeRef.current === label && partialTranscriptRef.current.trim()) {
-          setError('Network is unstable. I’ll keep what I heard.')
-        }
-      },
-    })
-    realtimeRef.current = realtime
+    try {
+      const realtime = await startRealtimeTranscription(language, mode, {
+        onPartial(text) {
+          setPartialTranscript(text)
+          partialTranscriptRef.current = text
+          if (label === 'scene') {
+            setSceneTranscript(text)
+            sceneTranscriptRef.current = text
+          }
+        },
+        onFinal(text) {
+          setPartialTranscript(text)
+          partialTranscriptRef.current = text
+          if (label === 'scene') {
+            setSceneTranscript(text)
+            sceneTranscriptRef.current = text
+          }
+        },
+        onError(error) {
+          console.warn(`Realtime transcription ${label} error: ${error.message}`)
+          if (recordingModeRef.current === label && partialTranscriptRef.current.trim()) {
+            setError('Network is unstable. I’ll keep what I heard.')
+          }
+        },
+      })
+      realtimeRef.current = realtime
+    } catch (error) {
+      realtimeRef.current = null
+      console.warn(`Realtime transcription ${label} unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    }
     await recorder.startRecording({
       sampleRate: 16000,
       channels: 1,
@@ -126,12 +131,32 @@ export function useSession(): SessionData {
     const recording = await recorder.stopRecording()
     const realtime = realtimeRef.current
     realtimeRef.current = null
-    if (!realtime) throw new Error('No realtime transcription was active')
-    const transcript = await realtime.finish(
-      label === 'english' ? { softTimeoutMs: 6500, hardTimeoutMs: 15000 } : undefined
-    )
+    const language = label === 'english' ? 'english' : 'chinese'
+    if (!realtime) {
+      const transcript = await transcribeRecording(recording, language)
+      console.log(`Timing client full_audio_${label}_fallback: ${Date.now() - startedAt}ms`)
+      return { transcript, recording }
+    }
+    let transcript = ''
+    try {
+      transcript = await realtime.finish(
+        label === 'english' ? { softTimeoutMs: 6500, hardTimeoutMs: 15000 } : undefined
+      )
+    } catch (error) {
+      console.warn(`Realtime finish ${label} failed: ${error instanceof Error ? error.message : String(error)}`)
+      transcript = await transcribeRecording(recording, language)
+    }
     console.log(`Timing client streaming_${label}_final: ${Date.now() - startedAt}ms`)
     return { transcript, recording }
+  }
+
+  const transcribeRecording = async (
+    recording: Awaited<ReturnType<typeof recorder.stopRecording>> | null,
+    language: 'chinese' | 'english'
+  ) => {
+    if (!recording?.fileUri) throw new Error('No audio recording was captured')
+    const audioBase64 = await new File(recording.fileUri).base64()
+    return (await transcribeSpeech(audioBase64, language, recording.mimeType || 'audio/wav')).trim()
   }
 
   const finalChineseTranscript = async (
@@ -141,8 +166,7 @@ export function useSession(): SessionData {
     if (!recording?.fileUri) return streamingTranscript
     try {
       const startedAt = Date.now()
-      const audioBase64 = await new File(recording.fileUri).base64()
-      const fullTranscript = (await transcribeSpeech(audioBase64, 'chinese', recording.mimeType || 'audio/wav')).trim()
+      const fullTranscript = await transcribeRecording(recording, 'chinese')
       console.log(`Timing client chinese_full_audio_confirm: ${Date.now() - startedAt}ms`)
       if (shouldUseFullTranscript(streamingTranscript, fullTranscript)) return fullTranscript
     } catch (error) {

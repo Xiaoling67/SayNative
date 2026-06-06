@@ -4,6 +4,7 @@ type Language = 'chinese' | 'english'
 type RealtimeMode = 'vad' | 'manual'
 const SOFT_FINISH_TIMEOUT_MS = 3500
 const HARD_FINISH_TIMEOUT_MS = 12000
+const OPEN_TIMEOUT_MS = 6000
 const MAX_PENDING_AUDIO_CHUNKS = 200
 
 interface RealtimeCallbacks {
@@ -35,8 +36,13 @@ export function startRealtimeTranscription(
     let finishReject: ((error: Error) => void) | null = null
     let softFinishTimeout: ReturnType<typeof setTimeout> | null = null
     let hardFinishTimeout: ReturnType<typeof setTimeout> | null = null
+    const openTimeout = setTimeout(() => {
+      if (!opened) fail(new Error('Realtime transcription connection timed out'))
+      close()
+    }, OPEN_TIMEOUT_MS)
 
     function fail(error: Error) {
+      if (settled && !finishReject) return
       callbacks.onError(error)
       if (finishResolve && lastText.trim()) {
         resolveFinish(lastText)
@@ -55,6 +61,7 @@ export function startRealtimeTranscription(
 
     ws.onopen = () => {
       opened = true
+      clearTimeout(openTimeout)
       send({ type: 'start', language, mode })
       while (pendingAudio.length) send({ type: 'audio', audio: pendingAudio.shift() })
       if (!settled) {
@@ -154,6 +161,7 @@ export function startRealtimeTranscription(
     }
 
     function close() {
+      clearTimeout(openTimeout)
       try {
         ws.close()
       } catch {}
