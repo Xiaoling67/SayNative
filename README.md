@@ -4,6 +4,20 @@ SayNative is an iPhone app that helps Chinese speakers practice natural spoken A
 
 Users speak Chinese, optionally add a scene, receive native-sounding American English options, listen to the phrase, repeat it out loud, and get strict shadowing feedback.
 
+## Product Screenshots
+
+<p>
+  <img src="docs/images/saynative-start.png" width="190" alt="SayNative start screen" />
+  <img src="docs/images/saynative-ready.png" width="190" alt="SayNative generated English options" />
+  <img src="docs/images/saynative-recording.png" width="190" alt="SayNative repeat recording screen" />
+</p>
+
+<p>
+  <img src="docs/images/saynative-feedback.png" width="190" alt="SayNative correction feedback" />
+  <img src="docs/images/saynative-success.png" width="190" alt="SayNative success feedback" />
+  <img src="docs/images/saynative-icon-home.png" width="190" alt="SayNative iPhone app icon" />
+</p>
+
 ## Why This Exists
 
 Direct translation often produces English that is grammatically correct but not how Americans naturally speak in daily life. SayNative focuses on intent, context, and high-frequency spoken phrasing, so learners can practice the kind of English they actually need in restaurants, school, work, dating, and everyday conversations.
