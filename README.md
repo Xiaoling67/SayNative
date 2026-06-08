@@ -54,6 +54,8 @@ The product intentionally avoids broad language-learning features at this stage.
 - **Strict practice:** shadowing feedback checks the exact target phrase, not just similar meaning.
 - **Low-friction repetition:** after a phrase is generated, users can practice it multiple times or move to the next sentence.
 
+See [Native Rewrite Design](docs/native-rewrite-design.md) for the prompt and quality strategy behind SayNative's spoken English generation.
+
 ## Architecture
 
 ```mermaid
