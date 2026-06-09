@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AudioStudioModule, useAudioRecorder } from '@siteed/audio-studio'
 import { File } from 'expo-file-system'
-import { SessionState, Translation } from '../types'
+import { SessionState, Translation, TranslationMode } from '../types'
 import { evaluateSpeech, transcribeSpeech, translateChinese } from '../lib/api'
 import { saveToHistory } from '../lib/history'
+import { getTranslationMode, saveTranslationMode } from '../lib/settings'
 import { speakWithElevenLabs, stopTTS } from '../lib/elevenlabs'
 import { RealtimeTranscriptionSession, startRealtimeTranscription } from '../lib/realtimeTranscription'
 
@@ -15,9 +16,11 @@ interface SessionData {
   partialTranscript: string
   translations: Translation[]
   currentTranslation: Translation | null
+  translationMode: TranslationMode
   feedback: string
   isCorrect: boolean
   error: string
+  setTranslationMode: (mode: TranslationMode) => void
   startSession: () => void
   startSceneListening: () => void
   endSession: () => void
@@ -39,6 +42,7 @@ export function useSession(): SessionData {
   const [partialTranscript, setPartialTranscript] = useState('')
   const [translations, setTranslations] = useState<Translation[]>([])
   const [currentTranslation, setCurrentTranslation] = useState<Translation | null>(null)
+  const [translationMode, setTranslationModeState] = useState<TranslationMode>('fast')
   const [feedback, setFeedback] = useState('')
   const [isCorrect, setIsCorrect] = useState(false)
   const [error, setError] = useState('')
@@ -47,10 +51,31 @@ export function useSession(): SessionData {
   const sceneTranscriptRef = useRef('')
   const partialTranscriptRef = useRef('')
   const currentTranslationRef = useRef<Translation | null>(null)
+  const translationModeRef = useRef<TranslationMode>('fast')
   const chineseTranscriptRef = useRef('')
   const recordingModeRef = useRef<'scene' | 'chinese' | 'english' | null>(null)
   const realtimeRef = useRef<RealtimeTranscriptionSession | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getTranslationMode()
+      .then((mode) => {
+        if (cancelled) return
+        translationModeRef.current = mode
+        setTranslationModeState(mode)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const setTranslationMode = useCallback((mode: TranslationMode) => {
+    translationModeRef.current = mode
+    setTranslationModeState(mode)
+    saveTranslationMode(mode).catch(() => {})
+  }, [])
 
   const clearPendingTimeout = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
@@ -254,7 +279,7 @@ export function useSession(): SessionData {
 
     try {
       const startedAt = Date.now()
-      const trans = await translateChinese(transcript, sceneTranscriptRef.current)
+      const trans = await translateChinese(transcript, sceneTranscriptRef.current, translationModeRef.current)
       console.log(`Timing client chinese_translate_flow: ${Date.now() - startedAt}ms`)
       if (!activeRef.current) return
       if (!trans.length) throw new Error('No translation returned')
@@ -473,9 +498,11 @@ export function useSession(): SessionData {
     partialTranscript,
     translations,
     currentTranslation,
+    translationMode,
     feedback,
     isCorrect,
     error,
+    setTranslationMode,
     startSession,
     startSceneListening,
     endSession,

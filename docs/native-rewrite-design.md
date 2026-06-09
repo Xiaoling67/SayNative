@@ -59,7 +59,8 @@ The native rewrite prompt is a core product asset. It should be treated like cod
 - tested against known quality cases
 - changed separately from unrelated UI or ASR work
 
-The production prompt lives in [`backend/prompts/nativeRewritePrompt.mjs`](../backend/prompts/nativeRewritePrompt.mjs).
+The Fast production prompt lives in [`backend/prompts/nativeRewritePrompt.mjs`](../backend/prompts/nativeRewritePrompt.mjs).
+The More Native review prompt lives in [`backend/prompts/moreNativeRewritePrompt.mjs`](../backend/prompts/moreNativeRewritePrompt.mjs).
 
 This keeps language quality traceable and prevents accidental prompt drift.
 
@@ -95,13 +96,13 @@ Rule:
 When ordering a dish, do not translate 想要 as want. Use common restaurant ordering chunks.
 ```
 
-## Future Modes
+## Generation Modes
 
-The product can eventually support two generation modes:
+SayNative supports two generation modes:
 
 | Mode | Use case | API pattern |
 | --- | --- | --- |
 | Fast | Default daily practice | One call with internal five-step rewrite |
-| Refined | Offline testing or premium-quality review | Multi-step analyze, review, revise, and polish |
+| More Native | Higher-quality phrasing when the user can wait longer | Two calls: generate candidates, then native judge and rewrite |
 
-The current product should prioritize Fast mode because it gives the best balance between native quality and learning speed.
+Fast is the default because it gives the best balance between native quality and learning speed. More Native only changes English generation. It does not change ASR, TTS, repeat evaluation, history, or the rest of the learning flow.

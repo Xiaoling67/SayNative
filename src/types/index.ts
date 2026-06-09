@@ -15,6 +15,8 @@ export interface Translation {
   note: string
 }
 
+export type TranslationMode = 'fast' | 'moreNative'
+
 export interface HistoryItem {
   id: string
   english: string

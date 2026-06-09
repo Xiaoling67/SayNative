@@ -2,6 +2,7 @@ import http from 'node:http'
 import { readFileSync } from 'node:fs'
 import { Buffer } from 'node:buffer'
 import WebSocket, { WebSocketServer } from 'ws'
+import { MORE_NATIVE_REWRITE_PROMPT } from './prompts/moreNativeRewritePrompt.mjs'
 import { NATIVE_REWRITE_PROMPT } from './prompts/nativeRewritePrompt.mjs'
 
 loadEnv()
@@ -113,10 +114,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.url === '/api/translate') {
-      const content = await openai(
-        NATIVE_REWRITE_PROMPT,
-        formatTranslateInput(requiredField(body.chinese, 'chinese'), body.scene)
-      )
+      const content = await translateChinese(body)
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, { translations: parseTranslations(content) })
     }
@@ -579,6 +577,20 @@ function appendTranscript(current, next) {
   return `${cleanCurrent}${separator}${cleanNext}`.trim()
 }
 
+async function translateChinese(body) {
+  const chinese = requiredField(body.chinese, 'chinese')
+  const mode = body.mode === 'moreNative' ? 'moreNative' : 'fast'
+  const input = formatTranslateInput(chinese, body.scene)
+  const draft = await openai(NATIVE_REWRITE_PROMPT, input)
+  if (mode === 'fast') return draft
+
+  return openai(
+    MORE_NATIVE_REWRITE_PROMPT,
+    formatMoreNativeInput(chinese, body.scene, draft),
+    { maxOutputTokens: 500 }
+  )
+}
+
 function extractPcm16FromWav(buffer) {
   if (buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
     return buffer
@@ -598,14 +610,14 @@ function extractPcm16FromWav(buffer) {
   throw new Error('WAV file does not contain a data chunk')
 }
 
-async function openai(systemPrompt, userContent) {
+async function openai(systemPrompt, userContent, options = {}) {
   if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY')
 
   const payload = {
     model: OPENAI_MODEL,
     instructions: systemPrompt,
     input: userContent,
-    max_output_tokens: 350,
+    max_output_tokens: options.maxOutputTokens ?? 350,
     reasoning: { effort: 'low' },
     text: { verbosity: 'low' },
   }
@@ -648,6 +660,18 @@ function formatTranslateInput(chinese, scene) {
   return `Scene/context where the user will say this: ${cleanScene}
 
 Chinese sentence: ${chinese}`
+}
+
+function formatMoreNativeInput(chinese, scene, draft) {
+  const cleanScene = typeof scene === 'string' ? scene.trim() : ''
+  return `Chinese sentence:
+${chinese}
+
+Scene/context:
+${cleanScene || '(none provided)'}
+
+Fast candidate options:
+${draft}`
 }
 
 function parseTranslations(content) {

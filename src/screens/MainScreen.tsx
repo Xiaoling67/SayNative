@@ -7,6 +7,7 @@ import {
   SafeAreaView,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native'
 import * as Haptics from 'expo-haptics'
 import ConfettiCannon from 'react-native-confetti-cannon'
@@ -62,6 +63,13 @@ export default function MainScreen({ onOpenHistory }: Props) {
   const showSceneStart = session.state === 'idle'
   const showNextPractice = session.state === 'ready_to_speak' || session.state === 'correct'
   const isSceneBusy = session.sceneStatus !== 'idle'
+  const chooseTranslationMode = () => {
+    Alert.alert('Mode', 'Choose how SayNative generates English.', [
+      { text: 'Fast', onPress: () => session.setTranslationMode('fast') },
+      { text: 'More Native', onPress: () => session.setTranslationMode('moreNative') },
+      { text: 'Cancel', style: 'cancel' },
+    ])
+  }
 
   React.useEffect(() => {
     if (session.state === 'correct') {
@@ -78,9 +86,20 @@ export default function MainScreen({ onOpenHistory }: Props) {
           <Text style={styles.title}>SayNative</Text>
           <Text style={styles.subtitle}>Your spoken American English coach</Text>
         </View>
-        <TouchableOpacity style={styles.historyBtn} onPress={onOpenHistory}>
-          <HistoryIcon />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.modeBtn}
+            onPress={chooseTranslationMode}
+          >
+            <Text style={styles.modeBtnText}>
+              {session.translationMode === 'moreNative' ? 'Native' : 'Fast'}
+            </Text>
+            <Text style={styles.modeChevron}>⌄</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.historyBtn} onPress={onOpenHistory}>
+            <HistoryIcon />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.main} showsVerticalScrollIndicator={false}>
@@ -262,6 +281,34 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 24, fontWeight: '700', color: '#111', fontFamily: 'System' },
   subtitle: { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  modeBtn: {
+    height: 38,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    borderRadius: 12,
+    backgroundColor: '#FFF7ED',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  modeBtnText: {
+    fontSize: 12,
+    color: '#EA580C',
+    fontWeight: '700',
+  },
+  modeChevron: {
+    fontSize: 13,
+    color: '#EA580C',
+    fontWeight: '700',
+    marginTop: -2,
+  },
   historyBtn: {
     borderWidth: 1,
     borderColor: '#E5E7EB',

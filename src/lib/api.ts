@@ -1,7 +1,7 @@
-import { Translation } from '../types'
+import { Translation, TranslationMode } from '../types'
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '')
-const REQUEST_TIMEOUT_MS = 45000
+const REQUEST_TIMEOUT_MS = 70000
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const controller = new AbortController()
@@ -51,8 +51,12 @@ export async function synthesizeSpeech(text: string): Promise<string> {
   return data.audioBase64
 }
 
-export async function translateChinese(chinese: string, scene?: string): Promise<Translation[]> {
-  const data = await post<{ translations: Translation[] }>('/api/translate', { chinese, scene })
+export async function translateChinese(
+  chinese: string,
+  scene?: string,
+  mode: TranslationMode = 'fast'
+): Promise<Translation[]> {
+  const data = await post<{ translations: Translation[] }>('/api/translate', { chinese, scene, mode })
   return data.translations
 }
 

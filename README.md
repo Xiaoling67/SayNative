@@ -27,7 +27,7 @@ The product intentionally avoids broad language-learning features at this stage.
 | Chinese realtime speech recognition | Alibaba Model Studio Qwen realtime ASR |
 | Chinese final transcript confirmation | Alibaba Model Studio Qwen ASR |
 | Scene capture | Alibaba Model Studio Qwen realtime ASR |
-| Natural spoken American English generation | OpenAI |
+| Natural spoken American English generation | OpenAI Fast / More Native modes |
 | English text-to-speech for imitation | ElevenLabs |
 | English repeat recognition | Alibaba Model Studio Qwen realtime ASR |
 | Strict repeat evaluation | OpenAI JSON evaluation |
