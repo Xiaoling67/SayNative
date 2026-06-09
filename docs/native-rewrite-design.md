@@ -59,6 +59,8 @@ The native rewrite prompt is a core product asset. It should be treated like cod
 - tested against known quality cases
 - changed separately from unrelated UI or ASR work
 
+The production prompt lives in [`backend/prompts/nativeRewritePrompt.mjs`](../backend/prompts/nativeRewritePrompt.mjs).
+
 This keeps language quality traceable and prevents accidental prompt drift.
 
 ## Quality Iteration
