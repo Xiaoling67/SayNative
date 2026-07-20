@@ -13,6 +13,7 @@ import * as Haptics from 'expo-haptics'
 import ConfettiCannon from 'react-native-confetti-cannon'
 import { useSession } from '../hooks/useSession'
 import { SessionState } from '../types'
+import { trackDuration, trackEvent } from '../lib/analytics'
 
 interface Props {
   onOpenHistory: () => void
@@ -63,6 +64,13 @@ export default function MainScreen({ onOpenHistory }: Props) {
   const showSceneStart = session.state === 'idle'
   const showNextPractice = session.state === 'ready_to_speak' || session.state === 'correct'
   const isSceneBusy = session.sceneStatus !== 'idle'
+  React.useEffect(() => {
+    const startedAt = Date.now()
+    trackEvent('app_opened')
+    trackEvent('session_started')
+    return () => trackDuration('session_ended', startedAt)
+  }, [])
+
   const chooseTranslationMode = () => {
     Alert.alert('Mode', 'Choose how SayNative generates English.', [
       { text: 'Fast', onPress: () => session.setTranslationMode('fast') },
@@ -96,7 +104,13 @@ export default function MainScreen({ onOpenHistory }: Props) {
             </Text>
             <Text style={styles.modeChevron}>⌄</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.historyBtn} onPress={onOpenHistory}>
+          <TouchableOpacity
+            style={styles.historyBtn}
+            onPress={() => {
+              trackEvent('history_opened')
+              onOpenHistory()
+            }}
+          >
             <HistoryIcon />
           </TouchableOpacity>
         </View>

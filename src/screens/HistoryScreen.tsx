@@ -9,6 +9,7 @@ import {
 } from 'react-native'
 import { HistoryItem } from '../types'
 import { getHistory, deleteFromHistory, exportHistory } from '../lib/history'
+import { trackEvent } from '../lib/analytics'
 
 interface Props {
   onClose: () => void
@@ -23,11 +24,13 @@ export default function HistoryScreen({ onClose }: Props) {
 
   const handleDelete = async (id: string) => {
     await deleteFromHistory(id)
+    trackEvent('history_item_deleted')
     setItems((prev) => prev.filter((i) => i.id !== id))
   }
 
   const handleExport = async () => {
     await exportHistory()
+    trackEvent('history_exported', { item_count: items.length })
   }
 
   return (
@@ -63,6 +66,7 @@ export default function HistoryScreen({ onClose }: Props) {
               <View style={styles.itemContent}>
                 <Text style={styles.itemEnglish}>{item.english}</Text>
                 <Text style={styles.itemChinese}>{item.chinese}</Text>
+                {item.scene ? <Text style={styles.itemScene}>Scene: {item.scene}</Text> : null}
               </View>
               <TouchableOpacity
                 onPress={() => handleDelete(item.id)}
@@ -120,6 +124,7 @@ const styles = StyleSheet.create({
   itemContent: { flex: 1 },
   itemEnglish: { fontSize: 15, fontWeight: '500', color: '#111', lineHeight: 22 },
   itemChinese: { fontSize: 13, color: '#9CA3AF', marginTop: 2 },
+  itemScene: { fontSize: 12, color: '#6B7280', marginTop: 6 },
   deleteBtn: { padding: 8 },
   deleteBtnText: { fontSize: 14, color: '#D1D5DB' },
 })

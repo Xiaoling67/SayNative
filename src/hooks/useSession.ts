@@ -7,6 +7,9 @@ import { saveToHistory } from '../lib/history'
 import { getTranslationMode, saveTranslationMode } from '../lib/settings'
 import { speakWithElevenLabs, stopTTS } from '../lib/elevenlabs'
 import { RealtimeTranscriptionSession, startRealtimeTranscription } from '../lib/realtimeTranscription'
+import { trackDuration, trackEvent } from '../lib/analytics'
+
+const STOP_AUDIO_FLUSH_DELAY_MS = 350
 
 interface SessionData {
   state: SessionState
@@ -50,12 +53,14 @@ export function useSession(): SessionData {
   const activeRef = useRef(false)
   const sceneTranscriptRef = useRef('')
   const partialTranscriptRef = useRef('')
+  const translationsRef = useRef<Translation[]>([])
   const currentTranslationRef = useRef<Translation | null>(null)
   const translationModeRef = useRef<TranslationMode>('fast')
   const chineseTranscriptRef = useRef('')
   const recordingModeRef = useRef<'scene' | 'chinese' | 'english' | null>(null)
   const realtimeRef = useRef<RealtimeTranscriptionSession | null>(null)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const practiceAttemptsRef = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -75,6 +80,7 @@ export function useSession(): SessionData {
     translationModeRef.current = mode
     setTranslationModeState(mode)
     saveTranslationMode(mode).catch(() => {})
+    trackEvent('mode_changed', { mode_used: mode })
   }, [])
 
   const clearPendingTimeout = () => {
@@ -82,16 +88,20 @@ export function useSession(): SessionData {
     timeoutRef.current = null
   }
 
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
   const resetCurrentPrompt = () => {
     setChineseTranscript('')
     chineseTranscriptRef.current = ''
     setPartialTranscript('')
     partialTranscriptRef.current = ''
     setTranslations([])
+    translationsRef.current = []
     setCurrentTranslation(null)
     currentTranslationRef.current = null
     setFeedback('')
     setIsCorrect(false)
+    practiceAttemptsRef.current = 0
   }
 
   const startStreamingRecording = async (label: 'scene' | 'chinese' | 'english') => {
@@ -122,6 +132,7 @@ export function useSession(): SessionData {
         },
         onError(error) {
           console.warn(`Realtime transcription ${label} error: ${error.message}`)
+          trackEvent('realtime_disconnect', { phase: label })
           if (recordingModeRef.current === label && partialTranscriptRef.current.trim()) {
             setError('Network is unstable. I’ll keep what I heard.')
           }
@@ -130,6 +141,7 @@ export function useSession(): SessionData {
       realtimeRef.current = realtime
     } catch (error) {
       realtimeRef.current = null
+      trackEvent('realtime_disconnect', { phase: label })
       console.warn(`Realtime transcription ${label} unavailable: ${error instanceof Error ? error.message : String(error)}`)
     }
     await recorder.startRecording({
@@ -153,6 +165,7 @@ export function useSession(): SessionData {
 
   const stopStreamingRecording = async (label: 'scene' | 'chinese' | 'english') => {
     const startedAt = Date.now()
+    await wait(STOP_AUDIO_FLUSH_DELAY_MS)
     const recording = await recorder.stopRecording()
     const realtime = realtimeRef.current
     realtimeRef.current = null
@@ -216,8 +229,10 @@ export function useSession(): SessionData {
   }
 
   const playTTS = useCallback((text: string, onDone: () => void) => {
+    trackEvent('tts_played', { characters: text.length })
     speakWithElevenLabs(text, onDone).catch(() => {
       if (!activeRef.current) return
+      trackEvent('api_error', { error_type: 'tts_playback_failed' })
       setError('Audio playback failed. You can still practice by reading the sentence.')
       setState('ready_to_speak')
     })
@@ -233,11 +248,13 @@ export function useSession(): SessionData {
     sceneTranscriptRef.current = ''
     recordingModeRef.current = 'scene'
     setError('')
-    setSceneStatus('listening')
+    setSceneStatus('processing')
     setState('idle')
+    trackEvent('scene_recording_started')
 
     try {
       await startStreamingRecording('scene')
+      setSceneStatus('listening')
     } catch (e) {
       recordingModeRef.current = null
       setSceneStatus('idle')
@@ -253,10 +270,12 @@ export function useSession(): SessionData {
     setError('')
     setPartialTranscript('')
     partialTranscriptRef.current = ''
-    setState('listening_chinese')
+    setState('processing')
 
     try {
       await startStreamingRecording('chinese')
+      if (!activeRef.current) return
+      setState('listening_chinese')
     } catch (e) {
       if (!activeRef.current) return
       recordingModeRef.current = null
@@ -276,6 +295,11 @@ export function useSession(): SessionData {
     setChineseTranscript(transcript)
     chineseTranscriptRef.current = transcript
     setState('processing')
+    trackEvent('chinese_recorded', {
+      transcript_chars: transcript.trim().length,
+      has_scene: Boolean(sceneTranscriptRef.current.trim()),
+      mode_used: translationModeRef.current,
+    })
 
     try {
       const startedAt = Date.now()
@@ -285,9 +309,15 @@ export function useSession(): SessionData {
       if (!trans.length) throw new Error('No translation returned')
 
       setTranslations(trans)
+      translationsRef.current = trans
       setCurrentTranslation(trans[0])
       currentTranslationRef.current = trans[0]
       setState('playing_tts')
+      trackDuration('english_generated', startedAt, {
+        mode_used: translationModeRef.current,
+        has_scene: Boolean(sceneTranscriptRef.current.trim()),
+        option_count_shown: trans.length,
+      })
 
       playTTS(trans[0].text, () => {
         if (!activeRef.current) return
@@ -295,6 +325,7 @@ export function useSession(): SessionData {
       })
     } catch {
       if (!activeRef.current) return
+      trackEvent('api_error', { error_type: 'translation_failed' })
       setError('Translation failed, please try again')
       await startChineseListening()
     }
@@ -338,6 +369,7 @@ export function useSession(): SessionData {
       sceneTranscriptRef.current = scene
       setSceneStatus('idle')
       setState('idle')
+      trackDuration('scene_saved', startedAt, { transcript_chars: scene.length })
     } catch (e) {
       const fallback = partialTranscriptRef.current.trim()
       if (fallback) {
@@ -346,11 +378,13 @@ export function useSession(): SessionData {
         setSceneStatus('idle')
         setState('idle')
         setError('Network was unstable, so I used the scene already recognized.')
+        trackEvent('scene_saved', { transcript_chars: fallback.length, used_fallback: true })
         return
       }
       setSceneStatus('idle')
       setError(messageForError(e, 'Scene speech recognition failed, please try again'))
       setState('idle')
+      trackEvent('api_error', { error_type: 'scene_recognition_failed' })
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -362,6 +396,10 @@ export function useSession(): SessionData {
     setFeedback('')
     setPartialTranscript('')
     partialTranscriptRef.current = ''
+    trackEvent('practice_started', {
+      mode_used: translationModeRef.current,
+      selected_option_rank: selectedOptionRank(),
+    })
 
     try {
       await startStreamingRecording('english')
@@ -388,13 +426,20 @@ export function useSession(): SessionData {
       const result = await evaluateSpeech(currentTranslationRef.current?.text ?? '', userSpeech)
       console.log(`Timing client english_evaluate_flow: ${Date.now() - evaluateStartedAt}ms`)
       if (!activeRef.current) return
+      practiceAttemptsRef.current += 1
+      trackDuration('practice_completed', evaluateStartedAt, {
+        success: result.correct,
+        selected_option_rank: selectedOptionRank(),
+        mode_used: translationModeRef.current,
+        attempt_number: practiceAttemptsRef.current,
+      })
 
       setFeedback(result.feedback)
       setIsCorrect(result.correct)
 
       if (result.correct) {
         setState('correct')
-        await saveToHistory(currentTranslationRef.current?.text ?? '', chineseTranscriptRef.current)
+        await saveToHistory(currentTranslationRef.current?.text ?? '', chineseTranscriptRef.current, sceneTranscriptRef.current)
       } else {
         setState('incorrect')
         playTTS(result.feedback, () => {
@@ -411,11 +456,19 @@ export function useSession(): SessionData {
         const result = await evaluateSpeech(currentTranslationRef.current?.text ?? '', fallback)
         console.log(`Timing client english_evaluate_fallback_flow: ${Date.now() - evaluateStartedAt}ms`)
         if (!activeRef.current) return
+        practiceAttemptsRef.current += 1
+        trackDuration('practice_completed', evaluateStartedAt, {
+          success: result.correct,
+          selected_option_rank: selectedOptionRank(),
+          mode_used: translationModeRef.current,
+          attempt_number: practiceAttemptsRef.current,
+          used_fallback: true,
+        })
         setFeedback(result.feedback)
         setIsCorrect(result.correct)
         if (result.correct) {
           setState('correct')
-          await saveToHistory(currentTranslationRef.current?.text ?? '', chineseTranscriptRef.current)
+          await saveToHistory(currentTranslationRef.current?.text ?? '', chineseTranscriptRef.current, sceneTranscriptRef.current)
         } else {
           setState('incorrect')
           playTTS(result.feedback, () => {
@@ -427,6 +480,7 @@ export function useSession(): SessionData {
       }
       setError(messageForError(e, 'Evaluation failed, please try again'))
       setState('ready_to_speak')
+      trackEvent('api_error', { error_type: 'evaluation_failed' })
     }
   }, [startChineseListening]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -436,6 +490,11 @@ export function useSession(): SessionData {
     stopTTS()
     setCurrentTranslation(translation)
     currentTranslationRef.current = translation
+    trackEvent('option_selected', {
+      selected_option_rank: translationsRef.current.findIndex((item) => item.text === translation.text) + 1,
+      option_count_shown: translationsRef.current.length,
+      mode_used: translationModeRef.current,
+    })
     setFeedback('')
     setIsCorrect(false)
     setError('')
@@ -452,6 +511,10 @@ export function useSession(): SessionData {
     clearPendingTimeout()
     setError('')
     resetCurrentPrompt()
+    trackEvent('practice_flow_started', {
+      has_scene: Boolean(sceneTranscriptRef.current.trim()),
+      mode_used: translationModeRef.current,
+    })
     startChineseListening()
   }, [sceneStatus, startChineseListening])
 
@@ -484,11 +547,21 @@ export function useSession(): SessionData {
     stopTTS()
     setError('')
     setState('playing_tts')
+    trackEvent('tts_replayed', {
+      selected_option_rank: selectedOptionRank(),
+      mode_used: translationModeRef.current,
+    })
     playTTS(currentTranslationRef.current.text, () => {
       if (!activeRef.current) return
       setState('ready_to_speak')
     })
   }, [playTTS])
+
+  const selectedOptionRank = () => {
+    const current = currentTranslationRef.current
+    if (!current) return 0
+    return translationsRef.current.findIndex((item) => item.text === current.text) + 1
+  }
 
   return {
     state,

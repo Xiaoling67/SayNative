@@ -25,6 +25,8 @@ const QWEN_ASR_REALTIME_URL =
   process.env.QWEN_ASR_REALTIME_URL ?? 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
 const REALTIME_TRANSCRIBE_PATH = '/api/transcribe/realtime'
 const USAGE_FILE = process.env.SAYNATIVE_USAGE_FILE ?? '/tmp/saynative-usage.json'
+const ANALYTICS_FILE = process.env.SAYNATIVE_ANALYTICS_FILE ?? '/tmp/saynative-analytics.json'
+const ANALYTICS_EVENT_LIMIT = Number(process.env.SAYNATIVE_ANALYTICS_EVENT_LIMIT ?? 5000)
 const DAILY_LIMITS = {
   translate: Number(process.env.SAYNATIVE_DAILY_TRANSLATE_LIMIT ?? 30),
   evaluate: Number(process.env.SAYNATIVE_DAILY_EVALUATE_LIMIT ?? 100),
@@ -121,6 +123,13 @@ const server = http.createServer(async (req, res) => {
       await recordUsage(user, 'transcribe', { calls: 1, audioBytes: audioByteLength(body.audioBase64 ?? '') })
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, { text })
+    }
+
+    if (req.url === '/api/analytics') {
+      const user = await authenticate(req)
+      await recordAnalytics(user, body)
+      logTiming(req.url, requestStartedAt)
+      return sendJson(res, 200, { ok: true })
     }
 
     if (req.url === '/api/translate') {
@@ -305,6 +314,141 @@ function writeUsage(usage) {
   // ponytail: local JSON is enough for beta; move to DynamoDB/Firebase before multi-instance production.
   mkdirSync(dirname(USAGE_FILE), { recursive: true })
   writeFileSync(USAGE_FILE, JSON.stringify(usage, null, 2))
+}
+
+async function recordAnalytics(user, body) {
+  const event = analyticsEventName(body.event)
+  const properties = sanitizeAnalyticsProperties(body.properties)
+  const analytics = readAnalytics()
+  const now = new Date()
+  const timestamp = now.toISOString()
+  const day = timestamp.slice(0, 10)
+
+  analytics.events ??= []
+  analytics.daily ??= {}
+  analytics.users ??= {}
+
+  analytics.users[user.uid] ??= { firstSeen: timestamp }
+  analytics.users[user.uid].lastSeen = timestamp
+  analytics.users[user.uid].email = user.email
+
+  analytics.events.push({ timestamp, day, uid: user.uid, event, properties })
+  if (analytics.events.length > ANALYTICS_EVENT_LIMIT) {
+    analytics.events = analytics.events.slice(-ANALYTICS_EVENT_LIMIT)
+  }
+
+  analytics.daily[day] ??= {}
+  analytics.daily[day][user.uid] ??= {
+    events: {},
+    modes: {},
+    selectedOptionRanks: {},
+    errors: {},
+    latencies: {},
+  }
+  const daily = analytics.daily[day][user.uid]
+  daily.events[event] = (daily.events[event] ?? 0) + 1
+  daily.lastActiveAt = timestamp
+  daily.email = user.email
+
+  applyDailyAnalytics(daily, event, properties)
+  writeAnalytics(analytics)
+}
+
+function analyticsEventName(value) {
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9_]{1,63}$/.test(value)) {
+    throw new InputError('Invalid analytics event')
+  }
+  return value
+}
+
+function sanitizeAnalyticsProperties(properties) {
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return {}
+  const allowed = new Set([
+    'attempt_number',
+    'characters',
+    'duration_ms',
+    'error_type',
+    'has_scene',
+    'item_count',
+    'language',
+    'latency_ms',
+    'mode_used',
+    'option_count_shown',
+    'path',
+    'phase',
+    'selected_option_rank',
+    'success',
+    'transcript_chars',
+    'used_fallback',
+  ])
+  const sanitized = {}
+  for (const [key, value] of Object.entries(properties)) {
+    if (!allowed.has(key)) continue
+    if (typeof value === 'number' && Number.isFinite(value)) sanitized[key] = value
+    if (typeof value === 'boolean') sanitized[key] = value
+    if (typeof value === 'string') sanitized[key] = value.slice(0, 100)
+  }
+  return sanitized
+}
+
+function applyDailyAnalytics(daily, event, properties) {
+  if (event === 'session_started') daily.session_count = (daily.session_count ?? 0) + 1
+  if (event === 'app_opened') daily.app_open_count = (daily.app_open_count ?? 0) + 1
+  if (event === 'session_ended') daily.active_duration_ms = (daily.active_duration_ms ?? 0) + Number(properties.duration_ms ?? 0)
+  if (event === 'practice_flow_started') daily.full_flow_started_count = (daily.full_flow_started_count ?? 0) + 1
+  if (event === 'chinese_recorded') daily.chinese_recorded_count = (daily.chinese_recorded_count ?? 0) + 1
+  if (event === 'english_generated') daily.english_generated_count = (daily.english_generated_count ?? 0) + 1
+  if (event === 'practice_started') daily.practice_started_count = (daily.practice_started_count ?? 0) + 1
+  if (event === 'practice_completed') {
+    daily.practice_completed_count = (daily.practice_completed_count ?? 0) + 1
+    if (properties.success) {
+      daily.practice_success_count = (daily.practice_success_count ?? 0) + 1
+      daily.full_flow_completed_count = (daily.full_flow_completed_count ?? 0) + 1
+    } else {
+      daily.practice_failed_count = (daily.practice_failed_count ?? 0) + 1
+    }
+    daily.repeat_attempts_total = (daily.repeat_attempts_total ?? 0) + Number(properties.attempt_number ?? 0)
+  }
+  if (event === 'scene_saved') daily.scene_used_count = (daily.scene_used_count ?? 0) + 1
+  if (event === 'history_opened') daily.history_opened_count = (daily.history_opened_count ?? 0) + 1
+  if (event === 'tts_played') daily.tts_play_count = (daily.tts_play_count ?? 0) + 1
+  if (event === 'tts_replayed') daily.tts_replay_count = (daily.tts_replay_count ?? 0) + 1
+
+  if (properties.mode_used) {
+    daily.modes[properties.mode_used] = (daily.modes[properties.mode_used] ?? 0) + 1
+  }
+  if (properties.selected_option_rank) {
+    const rank = `rank_${properties.selected_option_rank}`
+    daily.selectedOptionRanks[rank] = (daily.selectedOptionRanks[rank] ?? 0) + 1
+  }
+  if (properties.error_type) {
+    daily.errors[properties.error_type] = (daily.errors[properties.error_type] ?? 0) + 1
+  }
+
+  const latency = Number(properties.duration_ms ?? properties.latency_ms ?? 0)
+  if (latency > 0) {
+    const latencyKey = event === 'api_performance'
+      ? [event, properties.path, properties.language].filter(Boolean).join(':')
+      : event
+    daily.latencies[latencyKey] ??= { count: 0, totalMs: 0, maxMs: 0 }
+    daily.latencies[latencyKey].count += 1
+    daily.latencies[latencyKey].totalMs += latency
+    daily.latencies[latencyKey].maxMs = Math.max(daily.latencies[latencyKey].maxMs, latency)
+  }
+}
+
+function readAnalytics() {
+  try {
+    return JSON.parse(readFileSync(ANALYTICS_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeAnalytics(analytics) {
+  // ponytail: JSON file is enough for 10 beta testers; use a database before paid launch.
+  mkdirSync(dirname(ANALYTICS_FILE), { recursive: true })
+  writeFileSync(ANALYTICS_FILE, JSON.stringify(analytics, null, 2))
 }
 
 async function transcribeSpeech(body) {

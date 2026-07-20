@@ -21,5 +21,6 @@ export interface HistoryItem {
   id: string
   english: string
   chinese: string
+  scene?: string
   timestamp: number
 }

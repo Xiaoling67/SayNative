@@ -1,5 +1,6 @@
 import { Translation, TranslationMode } from '../types'
 import { getCurrentUser } from './auth'
+import { trackDuration } from './analytics'
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 70000
@@ -26,9 +27,20 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     }
     const json = await res.json()
     console.log(`Timing client ${path}: ${Date.now() - startedAt}ms`)
+    trackDuration('api_performance', startedAt, {
+      path,
+      language: typeof body === 'object' && body && 'language' in body ? String(body.language) : undefined,
+      success: true,
+    })
     return json
   } catch (error) {
     console.log(`Timing client ${path} failed: ${Date.now() - startedAt}ms`)
+    trackDuration('api_performance', startedAt, {
+      path,
+      language: typeof body === 'object' && body && 'language' in body ? String(body.language) : undefined,
+      success: false,
+      error_type: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'request_failed',
+    })
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error('The request timed out. Please try again.')
     }
