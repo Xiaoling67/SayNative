@@ -54,6 +54,10 @@ export async function logout() {
   notify()
 }
 
+export async function getCurrentUser() {
+  return restoreSession()
+}
+
 async function restoreSession() {
   if (currentUser) return currentUser
 

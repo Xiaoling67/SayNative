@@ -1,6 +1,7 @@
 import http from 'node:http'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { Buffer } from 'node:buffer'
+import { dirname } from 'node:path'
 import WebSocket, { WebSocketServer } from 'ws'
 import { MORE_NATIVE_REWRITE_PROMPT } from './prompts/moreNativeRewritePrompt.mjs'
 import { NATIVE_REWRITE_PROMPT } from './prompts/nativeRewritePrompt.mjs'
@@ -8,6 +9,7 @@ import { NATIVE_REWRITE_PROMPT } from './prompts/nativeRewritePrompt.mjs'
 loadEnv()
 
 const PORT = Number(process.env.PORT ?? 8787)
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY ?? process.env.EXPO_PUBLIC_FIREBASE_API_KEY
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 const OPENAI_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.5'
 const ELEVENLABS_API_KEY = required('ELEVENLABS_API_KEY')
@@ -22,6 +24,12 @@ const QWEN_ASR_REALTIME_MODEL = process.env.QWEN_ASR_REALTIME_MODEL ?? 'qwen3-as
 const QWEN_ASR_REALTIME_URL =
   process.env.QWEN_ASR_REALTIME_URL ?? 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
 const REALTIME_TRANSCRIBE_PATH = '/api/transcribe/realtime'
+const USAGE_FILE = process.env.SAYNATIVE_USAGE_FILE ?? '/tmp/saynative-usage.json'
+const DAILY_LIMITS = {
+  translate: Number(process.env.SAYNATIVE_DAILY_TRANSLATE_LIMIT ?? 30),
+  evaluate: Number(process.env.SAYNATIVE_DAILY_EVALUATE_LIMIT ?? 100),
+  tts: Number(process.env.SAYNATIVE_DAILY_TTS_LIMIT ?? 100),
+}
 
 const CORRECT_PROMPT = `You are evaluating whether a student correctly repeated a target English phrase.
 
@@ -108,33 +116,53 @@ const server = http.createServer(async (req, res) => {
     )
 
     if (req.url === '/api/transcribe') {
+      const user = await authenticate(req)
       const text = await transcribeSpeech(body)
+      await recordUsage(user, 'transcribe', { calls: 1, audioBytes: audioByteLength(body.audioBase64 ?? '') })
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, { text })
     }
 
     if (req.url === '/api/translate') {
-      const content = await translateChinese(body)
+      const user = await authenticate(req)
+      await assertDailyLimit(user, 'translate')
+      const content = await translateChinese(body, user)
+      await recordUsage(user, 'translate', {
+        calls: 1,
+        inputChars: String(body.chinese ?? '').length + String(body.scene ?? '').length,
+        outputChars: content.length,
+      })
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, { translations: parseTranslations(content) })
     }
 
     if (req.url === '/api/evaluate') {
+      const user = await authenticate(req)
+      await assertDailyLimit(user, 'evaluate')
       requiredField(body.target, 'target')
       requiredField(body.userSpeech, 'userSpeech')
       const quickEvaluation = quickEvaluate(body.target, body.userSpeech)
       if (quickEvaluation) {
         console.log('Timing evaluate_quick: 0ms')
+        await recordUsage(user, 'evaluate', { calls: 1, quickCalls: 1 })
         logTiming(req.url, requestStartedAt)
         return sendJson(res, 200, quickEvaluation)
       }
-      const content = await openai(CORRECT_PROMPT, JSON.stringify(body))
+      const content = await openai(CORRECT_PROMPT, JSON.stringify(body), { user, usageType: 'evaluate' })
+      await recordUsage(user, 'evaluate', {
+        calls: 1,
+        inputChars: String(body.target ?? '').length + String(body.userSpeech ?? '').length,
+        outputChars: content.length,
+      })
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, parseEvaluation(content))
     }
 
     if (req.url === '/api/tts') {
+      const user = await authenticate(req)
+      await assertDailyLimit(user, 'tts')
       const audio = await synthesizeWithElevenLabs(body.text)
+      await recordUsage(user, 'tts', { calls: 1, characters: String(body.text ?? '').length })
       logTiming(req.url, requestStartedAt)
       return sendJson(res, 200, audio)
     }
@@ -143,7 +171,11 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     logTiming(`${req.url ?? 'unknown'} failed`, requestStartedAt)
     console.error(error)
-    const status = error instanceof InputError ? 400 : 500
+    const status =
+      error instanceof InputError ? 400 :
+      error instanceof AuthError ? 401 :
+      error instanceof LimitError ? 429 :
+      500
     return sendJson(res, status, { error: error.message || 'Server error' })
   }
 })
@@ -207,11 +239,72 @@ function sendJson(res, status, data) {
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 }
 
 function logTiming(label, startedAt) {
   console.log(`Timing ${label}: ${Date.now() - startedAt}ms`)
+}
+
+async function authenticate(req) {
+  const token = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!token) throw new AuthError('Please log in again.')
+  if (!FIREBASE_API_KEY) throw new Error('Missing FIREBASE_API_KEY')
+
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken: token }),
+  })
+  const data = await response.json()
+  const user = data.users?.[0]
+  if (!response.ok || !user?.localId) throw new AuthError('Please log in again.')
+  return { uid: user.localId, email: user.email ?? '' }
+}
+
+async function assertDailyLimit(user, type) {
+  const limit = DAILY_LIMITS[type]
+  if (!limit) return
+  const usage = readUsage()
+  const today = usageToday(usage, user.uid)
+  const used = today[type]?.calls ?? 0
+  if (used >= limit) {
+    throw new LimitError(`You've reached today's beta limit. Come back tomorrow.`)
+  }
+}
+
+async function recordUsage(user, type, fields = {}) {
+  const usage = readUsage()
+  const today = usageToday(usage, user.uid)
+  const bucket = today[type] ?? { calls: 0 }
+  bucket.calls = (bucket.calls ?? 0) + (fields.calls ?? 0)
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === 'calls') continue
+    bucket[key] = (bucket[key] ?? 0) + Number(value || 0)
+  }
+  today[type] = bucket
+  writeUsage(usage)
+}
+
+function usageToday(usage, uid) {
+  const day = new Date().toISOString().slice(0, 10)
+  usage[day] ??= {}
+  usage[day][uid] ??= {}
+  return usage[day][uid]
+}
+
+function readUsage() {
+  try {
+    return JSON.parse(readFileSync(USAGE_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeUsage(usage) {
+  // ponytail: local JSON is enough for beta; move to DynamoDB/Firebase before multi-instance production.
+  mkdirSync(dirname(USAGE_FILE), { recursive: true })
+  writeFileSync(USAGE_FILE, JSON.stringify(usage, null, 2))
 }
 
 async function transcribeSpeech(body) {
@@ -577,17 +670,17 @@ function appendTranscript(current, next) {
   return `${cleanCurrent}${separator}${cleanNext}`.trim()
 }
 
-async function translateChinese(body) {
+async function translateChinese(body, user) {
   const chinese = requiredField(body.chinese, 'chinese')
   const mode = body.mode === 'moreNative' ? 'moreNative' : 'fast'
   const input = formatTranslateInput(chinese, body.scene)
-  const draft = await openai(NATIVE_REWRITE_PROMPT, input)
+  const draft = await openai(NATIVE_REWRITE_PROMPT, input, { user, usageType: 'translate' })
   if (mode === 'fast') return draft
 
   return openai(
     MORE_NATIVE_REWRITE_PROMPT,
     formatMoreNativeInput(chinese, body.scene, draft),
-    { maxOutputTokens: 500 }
+    { maxOutputTokens: 500, user, usageType: 'translate' }
   )
 }
 
@@ -637,6 +730,14 @@ async function openai(systemPrompt, userContent, options = {}) {
   }
   const data = await response.json()
   console.log(`Timing openai_${OPENAI_MODEL}: ${Date.now() - startedAt}ms`)
+  if (options.user && options.usageType && data.usage) {
+    await recordUsage(options.user, 'openai', {
+      calls: 1,
+      inputTokens: data.usage.input_tokens ?? data.usage.prompt_tokens ?? 0,
+      outputTokens: data.usage.output_tokens ?? data.usage.completion_tokens ?? 0,
+      totalTokens: data.usage.total_tokens ?? 0,
+    })
+  }
   return readOpenAiText(data)
 }
 
@@ -785,3 +886,5 @@ function audioByteLength(audioBase64) {
 }
 
 class InputError extends Error {}
+class AuthError extends Error {}
+class LimitError extends Error {}

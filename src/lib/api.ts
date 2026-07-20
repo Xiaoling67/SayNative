@@ -1,4 +1,5 @@
 import { Translation, TranslationMode } from '../types'
+import { getCurrentUser } from './auth'
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 70000
@@ -9,14 +10,18 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   const startedAt = Date.now()
 
   try {
+    const user = await getCurrentUser()
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user?.idToken ? { Authorization: `Bearer ${user.idToken}` } : {}),
+      },
       body: JSON.stringify(body),
       signal: controller.signal,
     })
     if (!res.ok) {
-      const message = await res.text()
+      const message = await readErrorMessage(res)
       throw new Error(message || 'API error')
     }
     const json = await res.json()
@@ -30,6 +35,15 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     throw error
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+async function readErrorMessage(res: Response) {
+  const text = await res.text()
+  try {
+    return JSON.parse(text)?.error ?? text
+  } catch {
+    return text
   }
 }
 
