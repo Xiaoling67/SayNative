@@ -1,6 +1,7 @@
 import { getCurrentUser } from './auth'
 
-const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8787').replace(/\/$/, '')
+const POSTHOG_KEY = process.env.EXPO_PUBLIC_POSTHOG_KEY
+const POSTHOG_HOST = (process.env.EXPO_PUBLIC_POSTHOG_HOST ?? 'https://us.i.posthog.com').replace(/\/$/, '')
 
 type AnalyticsProps = Record<string, string | number | boolean | null | undefined>
 
@@ -14,15 +15,23 @@ export function trackDuration(event: string, startedAt: number, properties: Anal
 
 async function sendEvent(event: string, properties: AnalyticsProps) {
   try {
+    if (!POSTHOG_KEY) return
+
     const user = await getCurrentUser()
-    if (!user?.idToken) return
-    await fetch(`${API_BASE}/api/analytics`, {
+    if (!user?.uid) return
+
+    await fetch(`${POSTHOG_HOST}/capture/`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${user.idToken}`,
-      },
-      body: JSON.stringify({ event, properties }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: POSTHOG_KEY,
+        event,
+        distinct_id: user.uid,
+        properties: {
+          ...properties,
+          app: 'saynative',
+        },
+      }),
     })
   } catch {
     // Analytics must never interrupt practice.
